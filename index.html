@@ -1,0 +1,425 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Race Track Globe</title>
+<style>
+  :root {
+    --bg: #05070d;
+    --panel: rgba(12, 16, 28, 0.86);
+    --panel-border: rgba(255, 255, 255, 0.09);
+    --text: #e9edf5;
+    --muted: #8b94a8;
+    --accent: #ff2d2d;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text);
+    font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  #scene { position: fixed; inset: 0; }
+  #scene canvas { display: block; touch-action: none; }
+
+  header { position: fixed; top: 16px; left: 16px; pointer-events: none; }
+  header h1 { margin: 0; font-size: 22px; letter-spacing: .02em; font-weight: 800; }
+  header h1 span { color: var(--accent); }
+  header p { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
+
+  #panel { position: fixed; top: 16px; right: 16px; bottom: 16px; width: 340px; display: flex; flex-direction: column;
+    background: var(--panel); border: 1px solid var(--panel-border); border-radius: 14px; backdrop-filter: blur(10px);
+    overflow: hidden; }
+  #panel .top { padding: 14px 14px 10px; border-bottom: 1px solid var(--panel-border); }
+  #search { width: 100%; padding: 9px 12px; border-radius: 9px; border: 1px solid var(--panel-border);
+    background: rgba(255,255,255,0.05); color: var(--text); font: inherit; outline: none; }
+  #search:focus { border-color: rgba(255,255,255,0.25); }
+  #chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px; border-radius: 999px; font-size: 12px;
+    border: 1px solid var(--panel-border); background: rgba(255,255,255,0.04); color: var(--text); cursor: pointer; user-select: none; }
+  .chip i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .chip.off { opacity: .35; }
+  #count { margin-top: 8px; color: var(--muted); font-size: 12px; }
+  #list { flex: 1; overflow-y: auto; padding: 4px 0; }
+  .item { padding: 8px 14px; cursor: pointer; display: flex; gap: 10px; align-items: flex-start; }
+  .item:hover, .item.sel { background: rgba(255,255,255,0.06); }
+  .item .dots { display: flex; gap: 3px; padding-top: 6px; flex-shrink: 0; width: 34px; flex-wrap: wrap; }
+  .item .dots i { width: 7px; height: 7px; border-radius: 50%; }
+  .item b { display: block; font-weight: 600; }
+  .item small { color: var(--muted); }
+
+  #card { position: fixed; left: 16px; bottom: 16px; width: 360px; max-width: calc(100vw - 32px); padding: 16px;
+    background: var(--panel); border: 1px solid var(--panel-border); border-radius: 14px; backdrop-filter: blur(10px);
+    display: none; }
+  #card.show { display: block; }
+  #card h2 { margin: 0 28px 2px 0; font-size: 18px; }
+  #card .country { color: var(--muted); }
+  #card .tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+  #card .tag { font-size: 11px; padding: 3px 8px; border-radius: 999px; color: #0b0d12; font-weight: 700; }
+  #card .stats { display: flex; gap: 18px; margin: 8px 0; }
+  #card .stats div small { display: block; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+  #card .stats div b { font-size: 16px; }
+  #card p { margin: 6px 0 10px; color: #c7cede; }
+  #card a { color: #8fc1ff; text-decoration: none; font-size: 13px; margin-right: 14px; }
+  #card .close { position: absolute; top: 10px; right: 12px; background: none; border: 0; color: var(--muted); font-size: 20px; cursor: pointer; }
+
+  #tip { position: fixed; pointer-events: none; padding: 5px 9px; border-radius: 7px; background: rgba(0,0,0,0.8);
+    border: 1px solid var(--panel-border); font-size: 12px; white-space: nowrap; display: none; transform: translate(12px, -50%); }
+  #toggle { display: none; }
+  #loading { position: fixed; left: 50%; top: 50%; transform: translate(-50%,-50%); color: var(--muted); }
+
+  @media (max-width: 760px) {
+    header { left: 16px; right: 16px; top: 12px; }
+    header h1 { font-size: 18px; }
+    #panel { top: auto; left: 0; right: 0; bottom: 0; width: auto; height: 46vh; border-radius: 14px 14px 0 0;
+      transition: transform .25s ease; }
+    #panel.collapsed { transform: translateY(calc(100% - 52px)); }
+    #toggle { display: block; width: 100%; background: none; border: 0; color: var(--muted); padding: 8px 0 0; font: inherit; cursor: pointer; }
+    #toggle::before { content: ""; display: block; width: 40px; height: 4px; border-radius: 2px; background: rgba(255,255,255,0.25); margin: 0 auto 4px; }
+    #card { bottom: auto; top: 70px; left: 16px; right: 16px; width: auto; }
+  }
+</style>
+</head>
+<body>
+<div id="scene"></div>
+<div id="loading">Loading the world…</div>
+
+<header>
+  <h1>Race Track <span>Globe</span></h1>
+  <p id="subtitle">Drag to spin · scroll to zoom · click a pin</p>
+</header>
+
+<aside id="panel">
+  <button id="toggle" aria-label="Toggle track list">Tracks</button>
+  <div class="top">
+    <input id="search" type="search" placeholder="Search track or country…" autocomplete="off">
+    <div id="chips"></div>
+    <div id="count"></div>
+  </div>
+  <div id="list"></div>
+</aside>
+
+<div id="card">
+  <button class="close" aria-label="Close">×</button>
+  <h2 id="c-name"></h2>
+  <div class="country" id="c-country"></div>
+  <div class="tags" id="c-tags"></div>
+  <div class="stats">
+    <div><small>Length</small><b id="c-len"></b></div>
+    <div><small>Coordinates</small><b id="c-coord"></b></div>
+  </div>
+  <p id="c-note"></p>
+  <a id="c-wiki" target="_blank" rel="noopener">Wikipedia ↗</a>
+  <a id="c-map" target="_blank" rel="noopener">Satellite view ↗</a>
+</div>
+
+<div id="tip"></div>
+
+<script src="vendor/three.min.js"></script>
+<script src="vendor/OrbitControls.js"></script>
+<script src="vendor/internmap.min.js"></script>
+<script src="vendor/d3-array.min.js"></script>
+<script src="vendor/d3-geo.min.js"></script>
+<script src="vendor/topojson-client.min.js"></script>
+<script src="tracks.js"></script>
+<script>
+(() => {
+  const R = 1;                     // globe radius
+  const DEG = Math.PI / 180;
+  const tracks = TRACKS.map(([name, country, lat, lon, len, series, note], i) => ({
+    i, name, country, lat, lon, len, note, series: series.split(",")
+  }));
+
+  // ---------- renderer / scene ----------
+  const host = document.getElementById("scene");
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.setSize(innerWidth, innerHeight);
+  host.appendChild(renderer.domElement);
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.01, 100);
+  camera.position.copy(latLonToVec(30, 0, innerWidth / innerHeight < 0.75 ? 5 : 3.4));
+
+  const controls = new THREE.OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.enablePan = false;
+  controls.minDistance = 1.15;
+  controls.maxDistance = 6;
+  controls.rotateSpeed = 0.5;
+  controls.zoomSpeed = 0.7;
+  controls.autoRotate = true;
+  controls.autoRotateSpeed = 0.35;
+
+  scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+  const sun = new THREE.DirectionalLight(0xffffff, 0.9);
+  scene.add(sun);
+
+  function latLonToVec(lat, lon, r = R) {
+    const phi = (90 - lat) * DEG, theta = (lon + 180) * DEG;
+    return new THREE.Vector3(-r * Math.sin(phi) * Math.cos(theta), r * Math.cos(phi), r * Math.sin(phi) * Math.sin(theta));
+  }
+
+  // ---------- stars ----------
+  {
+    const g = new THREE.BufferGeometry(), n = 3000, pos = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) {
+      const v = new THREE.Vector3().randomDirection ? new THREE.Vector3().randomDirection() :
+        new THREE.Vector3(Math.random() - .5, Math.random() - .5, Math.random() - .5).normalize();
+      v.multiplyScalar(30 + Math.random() * 30);
+      pos.set([v.x, v.y, v.z], i * 3);
+    }
+    g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+    scene.add(new THREE.Points(g, new THREE.PointsMaterial({ color: 0xffffff, size: 0.08, sizeAttenuation: true, transparent: true, opacity: 0.7 })));
+  }
+
+  // ---------- globe ----------
+  const W = 4096, H = 2048;
+  const canvas = document.createElement("canvas");
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext("2d");
+  function paintOcean() {
+    const grd = ctx.createLinearGradient(0, 0, 0, H);
+    grd.addColorStop(0, "#0a1a33"); grd.addColorStop(0.5, "#0d2547"); grd.addColorStop(1, "#0a1a33");
+    ctx.fillStyle = grd; ctx.fillRect(0, 0, W, H);
+    // graticule
+    ctx.strokeStyle = "rgba(120,170,255,0.08)"; ctx.lineWidth = 2;
+    for (let lon = -180; lon <= 180; lon += 15) { const x = (lon + 180) / 360 * W; ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
+    for (let lat = -75; lat <= 75; lat += 15) { const y = (90 - lat) / 180 * H; ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+  }
+  paintOcean();
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  const globe = new THREE.Mesh(
+    new THREE.SphereGeometry(R, 96, 96),
+    new THREE.MeshPhongMaterial({ map: tex, shininess: 12, specular: 0x223355 })
+  );
+  scene.add(globe);
+
+  // atmosphere glow
+  scene.add(new THREE.Mesh(
+    new THREE.SphereGeometry(R * 1.12, 64, 64),
+    new THREE.ShaderMaterial({
+      side: THREE.BackSide, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+      vertexShader: `varying vec3 vN; void main(){ vN = normalize(normalMatrix * normal); gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
+      fragmentShader: `varying vec3 vN; void main(){ float i = pow(0.72 - dot(vN, vec3(0,0,1.0)), 3.0); gl_FragColor = vec4(0.3,0.6,1.0,1.0) * i; }`
+    })
+  ));
+
+  // land from Natural Earth (world-atlas)
+  fetch("vendor/countries-50m.json")
+    .then(r => r.json())
+    .then(world => {
+      const countries = topojson.feature(world, world.objects.countries);
+      const borders = topojson.mesh(world, world.objects.countries, (a, b) => a !== b);
+      const proj = d3.geoEquirectangular().scale(W / (2 * Math.PI)).translate([W / 2, H / 2]);
+      const path = d3.geoPath(proj, ctx);
+      ctx.beginPath(); path(countries);
+      ctx.fillStyle = "#1d3b2c"; ctx.fill();
+      ctx.beginPath(); path(borders);
+      ctx.strokeStyle = "rgba(180,220,190,0.35)"; ctx.lineWidth = 1.5; ctx.stroke();
+      ctx.beginPath(); path(countries);
+      ctx.strokeStyle = "rgba(160,230,200,0.55)"; ctx.lineWidth = 2; ctx.stroke();
+      tex.needsUpdate = true;
+    })
+    .catch(() => {})
+    .finally(() => document.getElementById("loading").remove());
+
+  // ---------- pins ----------
+  const pinGroup = new THREE.Group();
+  scene.add(pinGroup);
+  const headGeo = new THREE.SphereGeometry(0.009, 16, 16);
+  const stemGeo = new THREE.CylinderGeometry(0.0015, 0.0015, 1, 6);
+  stemGeo.translate(0, 0.5, 0);
+  const hitGeo = new THREE.SphereGeometry(0.022, 8, 8);
+  const hitMat = new THREE.MeshBasicMaterial({ visible: false });
+  const hitTargets = [];
+  const UP = new THREE.Vector3(0, 1, 0);
+
+  tracks.forEach(t => {
+    const color = new THREE.Color(SERIES[t.series[0]].color);
+    const height = 0.025 + Math.min(t.series.length, 4) * 0.008;
+    const dir = latLonToVec(t.lat, t.lon).normalize();
+    const g = new THREE.Group();
+    g.position.copy(dir.clone().multiplyScalar(R));
+    g.quaternion.setFromUnitVectors(UP, dir);
+    const stem = new THREE.Mesh(stemGeo, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.8 }));
+    stem.scale.y = height;
+    const head = new THREE.Mesh(headGeo, new THREE.MeshBasicMaterial({ color }));
+    head.position.y = height;
+    const hit = new THREE.Mesh(hitGeo, hitMat);
+    hit.position.y = height;
+    hit.userData.track = t;
+    g.add(stem, head, hit);
+    pinGroup.add(g);
+    t.obj = g; t.head = head; t.dir = dir; t.height = height;
+    hitTargets.push(hit);
+  });
+
+  // selection ring
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(0.018, 0.024, 48),
+    new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, side: THREE.DoubleSide, depthWrite: false })
+  );
+  ring.visible = false;
+  scene.add(ring);
+
+  // ---------- UI ----------
+  const active = new Set(Object.keys(SERIES));
+  const chips = document.getElementById("chips");
+  const list = document.getElementById("list");
+  const search = document.getElementById("search");
+  const countEl = document.getElementById("count");
+  const panel = document.getElementById("panel");
+  const card = document.getElementById("card");
+  const tip = document.getElementById("tip");
+  let selected = null;
+
+  document.getElementById("subtitle").textContent =
+    `${tracks.length} circuits in ${new Set(tracks.map(t => t.country)).size} countries · drag to spin · click a pin`;
+
+  Object.entries(SERIES).forEach(([code, s]) => {
+    const c = document.createElement("span");
+    c.className = "chip";
+    c.innerHTML = `<i style="background:${s.color}"></i>${s.name}`;
+    c.onclick = e => {
+      if (e.shiftKey || e.metaKey) { active.clear(); active.add(code); }
+      else active.has(code) ? active.delete(code) : active.add(code);
+      [...chips.children].forEach((el, i) => el.classList.toggle("off", !active.has(Object.keys(SERIES)[i])));
+      refresh();
+    };
+    chips.appendChild(c);
+  });
+
+  function visible(t, q) {
+    if (!t.series.some(s => active.has(s))) return false;
+    if (!q) return true;
+    return (t.name + " " + t.country + " " + t.note).toLowerCase().includes(q);
+  }
+
+  function refresh() {
+    const q = search.value.trim().toLowerCase();
+    const shown = tracks.filter(t => visible(t, q)).sort((a, b) => a.country.localeCompare(b.country) || a.name.localeCompare(b.name));
+    tracks.forEach(t => t.obj.visible = shown.includes(t));
+    countEl.textContent = `${shown.length} of ${tracks.length} tracks`;
+    list.innerHTML = "";
+    const frag = document.createDocumentFragment();
+    shown.forEach(t => {
+      const el = document.createElement("div");
+      el.className = "item" + (t === selected ? " sel" : "");
+      el.innerHTML = `<span class="dots">${t.series.map(s => `<i style="background:${SERIES[s].color}"></i>`).join("")}</span>
+        <span><b></b><small></small></span>`;
+      el.querySelector("b").textContent = t.name;
+      el.querySelector("small").textContent = t.country + (t.len ? ` · ${t.len.toFixed(3)} km` : "");
+      el.onclick = () => select(t, true);
+      t.el = el;
+      frag.appendChild(el);
+    });
+    list.appendChild(frag);
+  }
+  search.addEventListener("input", refresh);
+  document.getElementById("toggle").onclick = () => panel.classList.toggle("collapsed");
+  card.querySelector(".close").onclick = () => select(null);
+  if (innerWidth <= 760) panel.classList.add("collapsed");
+
+  function select(t, fly) {
+    selected = t;
+    document.querySelectorAll(".item.sel").forEach(el => el.classList.remove("sel"));
+    if (!t) { card.classList.remove("show"); ring.visible = false; return; }
+    if (t.el) { t.el.classList.add("sel"); if (!fly) t.el.scrollIntoView({ block: "nearest" }); }
+    document.getElementById("c-name").textContent = t.name;
+    document.getElementById("c-country").textContent = t.country;
+    document.getElementById("c-tags").innerHTML = t.series.map(s =>
+      `<span class="tag" style="background:${SERIES[s].color}">${SERIES[s].name}</span>`).join("");
+    document.getElementById("c-len").textContent = t.len ? `${t.len.toFixed(3)} km` : "—";
+    document.getElementById("c-coord").textContent =
+      `${Math.abs(t.lat).toFixed(2)}°${t.lat >= 0 ? "N" : "S"}, ${Math.abs(t.lon).toFixed(2)}°${t.lon >= 0 ? "E" : "W"}`;
+    document.getElementById("c-note").textContent = t.note;
+    document.getElementById("c-wiki").href = "https://en.wikipedia.org/wiki/Special:Search?search=" + encodeURIComponent(t.name);
+    document.getElementById("c-map").href = `https://www.google.com/maps/@${t.lat},${t.lon},2500m/data=!3m1!1e3`;
+    card.classList.add("show");
+    ring.position.copy(t.dir.clone().multiplyScalar(R + 0.001));
+    ring.lookAt(t.dir.clone().multiplyScalar(2));
+    ring.visible = true;
+    if (innerWidth <= 760) panel.classList.add("collapsed");
+    flyTo(t.dir);
+  }
+
+  // ---------- camera fly-to (spherical slerp) ----------
+  let fly = null;
+  function flyTo(dir) {
+    controls.autoRotate = false;
+    const from = camera.position.clone();
+    const dist = Math.min(from.length(), 2.0);
+    fly = { from: from.clone().normalize(), to: dir.clone(), r0: from.length(), r1: Math.max(dist, 1.6), t: 0 };
+  }
+  function stepFly(dt) {
+    if (!fly) return;
+    fly.t = Math.min(1, fly.t + dt / 1.4);
+    const e = fly.t < .5 ? 4 * fly.t ** 3 : 1 - Math.pow(-2 * fly.t + 2, 3) / 2;
+    const q = new THREE.Quaternion().setFromUnitVectors(fly.from, fly.to);
+    const qi = new THREE.Quaternion().slerp(q, e);
+    const r = fly.r0 + (fly.r1 - fly.r0) * e + Math.sin(e * Math.PI) * 0.4;
+    camera.position.copy(fly.from.clone().applyQuaternion(qi).multiplyScalar(r));
+    camera.lookAt(0, 0, 0);
+    if (fly.t >= 1) fly = null;
+  }
+
+  // ---------- picking ----------
+  const ray = new THREE.Raycaster();
+  const mouse = new THREE.Vector2();
+  let downAt = null, hovered = null;
+  function pick(x, y) {
+    mouse.set(x / innerWidth * 2 - 1, -(y / innerHeight) * 2 + 1);
+    ray.setFromCamera(mouse, camera);
+    const hits = ray.intersectObjects(hitTargets.filter(h => h.parent.visible));
+    if (!hits.length) return null;
+    // ignore pins on the far side of the globe
+    const g = ray.intersectObject(globe)[0];
+    const h = hits[0];
+    if (g && g.distance < h.distance - 0.02) return null;
+    return h.object.userData.track;
+  }
+  renderer.domElement.addEventListener("pointermove", e => {
+    if (e.pointerType !== "mouse") return;
+    const t = pick(e.clientX, e.clientY);
+    hovered = t;
+    renderer.domElement.style.cursor = t ? "pointer" : "grab";
+    if (t) { tip.style.display = "block"; tip.style.left = e.clientX + "px"; tip.style.top = e.clientY + "px"; tip.textContent = `${t.name} — ${t.country}`; }
+    else tip.style.display = "none";
+  });
+  renderer.domElement.addEventListener("pointerdown", e => { downAt = [e.clientX, e.clientY]; fly = null; controls.autoRotate = false; });
+  renderer.domElement.addEventListener("pointerup", e => {
+    if (!downAt || Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) > 6) return;
+    const t = pick(e.clientX, e.clientY);
+    if (t) select(t, false);
+  });
+
+  addEventListener("resize", () => {
+    camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth, innerHeight);
+  });
+
+  // ---------- loop ----------
+  refresh();
+  const clock = new THREE.Clock();
+  (function loop() {
+    const dt = clock.getDelta(), time = clock.elapsedTime;
+    if (fly) stepFly(dt); else controls.update();
+    sun.position.copy(camera.position).add(new THREE.Vector3(1.5, 1, 0));
+    // keep pins a readable size when zoomed in
+    const s = THREE.MathUtils.clamp((camera.position.length() - R) / 1.8, 0.25, 1.3);
+    tracks.forEach(t => {
+      const k = t === selected ? 1.8 : t === hovered ? 1.5 : 1;
+      t.obj.scale.setScalar(s * k);
+    });
+    if (ring.visible) {
+      const p = (time * 0.8) % 1;
+      ring.scale.setScalar(s * (1 + p * 2.2));
+      ring.material.opacity = 1 - p;
+    }
+    renderer.render(scene, camera);
+    requestAnimationFrame(loop);
+  })();
+})();
+</script>
+</body>
+</html>
