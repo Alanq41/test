@@ -491,7 +491,7 @@ out geom;"""
             if hw in ROAD_CLASSES:
                 add_line("road", [way_coords(el)], {"c": ROAD_CLASSES[hw]})
             elif "building" in tags:
-                add_poly("building", [way_coords(el)], 25 * max(1, area_scale))
+                add_poly("building", [way_coords(el)], 40 * max(1, area_scale))
             elif tags.get("waterway") in ("river", "canal", "stream"):
                 add_line("waterline", [way_coords(el)], {"c": 1 if tags["waterway"] != "stream" else 2})
             elif tags.get("natural") == "water" or tags.get("waterway") in ("riverbank", "dock") \
@@ -531,8 +531,24 @@ out geom;"""
             features.append({"type": "Feature", "properties": {"kind": "circuit", "name": cname},
                              "geometry": {"type": "LineString", "coordinates": c}})
 
+    # merge each layer (kind + road class) into one Multi* feature to keep files small;
+    # the circuit stays as separate, ordered LineStrings
     order = {"water": 0, "forest": 1, "waterline": 2, "building": 3, "road": 4, "circuit": 5}
-    features.sort(key=lambda f: (order[f["properties"]["kind"]], -f["properties"].get("c", 0)))
+    layers, circuit_feats = {}, []
+    for f_ in features:
+        pr = f_["properties"]
+        if pr["kind"] == "circuit":
+            circuit_feats.append(f_)
+            continue
+        key = (pr["kind"], pr.get("c"))
+        layers.setdefault(key, []).append(f_["geometry"]["coordinates"])
+    features = []
+    for (kind, c), parts in sorted(layers.items(), key=lambda kv: (order[kv[0][0]], -(kv[0][1] or 0))):
+        multi = "MultiLineString" if kind in ("road", "waterline") else "MultiPolygon"
+        props = {"kind": kind} if c is None else {"kind": kind, "c": c}
+        features.append({"type": "Feature", "properties": props,
+                         "geometry": {"type": multi, "coordinates": parts}})
+    features += circuit_feats
     cw, cs = loc.inv(cx0, cy0)
     ce, cn = loc.inv(cx1, cy1)
     fc = {
@@ -549,7 +565,9 @@ out geom;"""
         json.dump(fc, f, ensure_ascii=False, separators=(",", ":"))
     counts = {}
     for f_ in features:
-        counts[f_["properties"]["kind"]] = counts.get(f_["properties"]["kind"], 0) + 1
+        k_ = f_["properties"]["kind"]
+        n_ = len(f_["geometry"]["coordinates"]) if f_["geometry"]["type"].startswith("Multi") else 1
+        counts[k_] = counts.get(k_, 0) + n_
     print(f"    wrote {os.path.relpath(path, ROOT)} ({os.path.getsize(path) // 1024} KB) {counts}", flush=True)
     return path
 

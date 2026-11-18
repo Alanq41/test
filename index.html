@@ -282,12 +282,15 @@
     for (const f of gj.features) {
       const k = f.properties.kind, g = f.geometry;
       if (k === "circuit") { circuit.push(g.coordinates.map(P)); continue; }
-      c2.beginPath();
-      if (g.type === "Polygon") g.coordinates.forEach(r => { trace(r); c2.closePath(); });
-      else trace(g.coordinates);
       if (k === "water" || k === "forest" || k === "building") {
-        c2.fillStyle = STYLE[k]; c2.fill("evenodd");
-      } else if (k === "waterline") {
+        c2.fillStyle = STYLE[k];
+        const polys = g.type === "MultiPolygon" ? g.coordinates : [g.coordinates];
+        for (const poly of polys) { c2.beginPath(); poly.forEach(r => { trace(r); c2.closePath(); }); c2.fill("evenodd"); }
+        continue;
+      }
+      c2.beginPath();
+      (g.type === "MultiLineString" ? g.coordinates : [g.coordinates]).forEach(trace);
+      if (k === "waterline") {
         c2.strokeStyle = STYLE.water; c2.lineWidth = Math.max(f.properties.c === 1 ? 14 : 3, 1 / pxm); c2.stroke();
       } else if (k === "road") {
         const c = f.properties.c || 4;
@@ -395,8 +398,13 @@
   // altitude at which the circuit fills most of it.
   function freeRect() {
     let x0 = 0, y0 = HEADER_H, x1 = innerWidth, y1 = innerHeight;
-    if (!SMALL()) x1 -= panel.offsetWidth + 16;
-    else {
+    if (!SMALL()) {
+      x1 -= panel.offsetWidth + 16;
+      if (card.classList.contains("show")) {        // avoid the card: beside it or above it, whichever leaves more room
+        const r = card.getBoundingClientRect();
+        if ((x1 - r.right) * (y1 - y0) > (x1 - x0) * (r.top - y0)) x0 = r.right + 8; else y1 = r.top - 8;
+      }
+    } else {
       y1 -= 44;
       if (card.classList.contains("show")) y0 = Math.min(card.getBoundingClientRect().bottom + 8, y1 - 120);
     }
@@ -464,8 +472,18 @@
 
   // ---------- camera fly-to ----------
   let fly = null, zoomGoal = null;
+  // OrbitControls keeps rotation momentum (e.g. from auto-rotate) privately; at
+  // close range even a tiny leftover drifts the view off the circuit, so drain it.
+  function stopMomentum() {
+    const p = camera.position.clone(), was = controls.autoRotate;
+    controls.autoRotate = false;
+    for (let i = 0; i < 250; i++) controls.update();
+    camera.position.copy(p); camera.lookAt(0, 0, 0);
+    controls.autoRotate = was;
+  }
   function flyTo(dir, alt1) {
     controls.autoRotate = false;
+    stopMomentum();
     zoomGoal = null;
     const from = camera.position.clone().normalize();
     const a0 = altitude();
@@ -483,7 +501,7 @@
       + Math.sin(er * Math.PI) * Math.min(1, fly.ang) * 0.6;
     camera.position.copy(fly.from.clone().applyQuaternion(qi).multiplyScalar(R + a));
     camera.lookAt(0, 0, 0);
-    if (fly.t >= 1) fly = null;
+    if (fly.t >= 1) { fly = null; stopMomentum(); }
   }
 
   // ---------- zoom (wheel / pinch), proportional to altitude ----------
