@@ -58,7 +58,8 @@ TRACK_OPTS = {
     # street circuit: only fragments are tagged raceway; the full lap is a route relation
     "long-beach-1": {"relation": 18052024},
     "monaco-t-shirt": {"avoid": r"e-?prix|formula e"},
-    "nurburgring-t-shirt": {"search": 6000, "prefer": r"nordschleife"},
+    # the Nordschleife is a road route relation; the type=circuit nearby is the GP track
+    "nurburgring-t-shirt": {"relation": 38566},
     # the kart track (raceway ways tagged sport=karting) sits beside the GP circuit
     "silverstone-kart-track-1": {"ways": "way[highway=raceway][sport=karting](around:350,52.0752,-1.0184)"},
 }
