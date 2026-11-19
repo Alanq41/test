@@ -42,7 +42,7 @@ ENDPOINTS = [
 USER_AGENT = "trackline-globe-fetch/1.0 (static site build script)"
 
 MARGIN_M = 2500          # surroundings kept within this distance of the circuit
-BUILDING_M = 1200        # buildings only this close (they dominate file size)
+BUILDING_M = 1000        # buildings only this close (they dominate file size)
 SEARCH_M = 3000          # radius around the tracks.js point to look for the circuit
 
 # Per-track tweaks. `search` = circuit search radius (m), `prefer` = regex the
@@ -546,8 +546,8 @@ out geom;"""
             if not near(xy):
                 continue
             hw = tags.get("highway")
-            if hw in ROAD_CLASSES and ROAD_CLASSES[hw] == 5 and extent > 4000:
-                continue                     # service roads/tracks: just clutter on big circuits
+            if hw in ROAD_CLASSES and ROAD_CLASSES[hw] == 5 and (extent > 4000 or not near_dist(xy, 800)):
+                continue                     # service roads/tracks: only close to the circuit
             if hw in ROAD_CLASSES:
                 add_line("road", [way_coords(el)], {"c": ROAD_CLASSES[hw]})
             elif "building" in tags:
