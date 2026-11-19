@@ -46,10 +46,12 @@ BUILDING_M = 1200        # buildings only this close (they dominate file size)
 SEARCH_M = 3000          # radius around the tracks.js point to look for the circuit
 
 # Per-track tweaks. `search` = circuit search radius (m), `prefer` = regex the
-# circuit relation's name should match, `avoid` = regex for names to skip.
+# circuit relation's name should match, `avoid` = regex for names to skip,
+# `relation` = use this OSM relation id as the circuit.
 TRACK_OPTS = {
     "bathurst-t-shirt": {"prefer": r"panorama"},
-    "isle-of-man-1": {"search": 4000, "prefer": r"mountain|snaefell|TT"},
+    # the TT course is mapped as a motorcycle route relation, not a circuit
+    "isle-of-man-1": {"relation": 188240},
     "le-mans-t-shirt": {"search": 7000, "prefer": r"sarthe|24"},
     "long-beach-1": {"prefer": r"long beach"},
     "monaco-t-shirt": {"avoid": r"e-?prix|formula e"},
@@ -329,7 +331,10 @@ def fetch_track(t):
     search = opts.get("search", SEARCH_M)
     print(f"[{t['handle']}] {t['name']}", flush=True)
 
-    q1 = f"""[out:json][timeout:120];
+    if opts.get("relation"):
+        q1 = f"[out:json][timeout:120];\nrel({opts['relation']});\nout geom;"
+    else:
+        q1 = f"""[out:json][timeout:120];
 (
   rel[type=circuit](around:{search},{t['lat']},{t['lon']});
   way[highway=raceway](around:{search},{t['lat']},{t['lon']});
@@ -355,6 +360,8 @@ out geom;"""
         lines = [way_coords(m) for m in el.get("members", [])
                  if m["type"] == "way" and "pit" not in (m.get("role") or "").lower()]
         lines = [l for l in lines if len(l) > 1]
+        if opts.get("relation"):
+            lines = [l for l in lines if l]
         if lines:
             score = 1 if opts.get("prefer") and re.search(opts["prefer"], name, re.I) else 0
             rels.append((score, length(lines), name, lines))
