@@ -51,6 +51,10 @@
     border: 1px solid var(--border); font-size: 12px; white-space: nowrap; display: none; transform: translate(12px, -50%); }
   #hint { position: fixed; left: 16px; top: calc(var(--header-h) + 12px); color: var(--muted); font-size: 12px; pointer-events: none; }
   #toggle { display: none; }
+  #credit { position: fixed; right: 8px; bottom: 6px; z-index: 4; font-size: 10px; color: #8a8a8a;
+    background: rgba(0,0,0,0.55); padding: 2px 6px; border-radius: 4px; }
+  #credit a { color: inherit; text-decoration: none; }
+  #credit a:hover { color: #fff; }
 
   @media (max-width: 760px) {
     header span { font-size: 12px; }
@@ -61,6 +65,7 @@
     #toggle { display: block; width: 100%; background: none; border: 0; border-bottom: 1px solid var(--border); color: var(--muted);
       padding: 8px 0; font: inherit; font-size: 12px; letter-spacing: .12em; text-transform: uppercase; cursor: pointer; }
     #card { bottom: auto; top: calc(var(--header-h) + 36px); }
+    #credit { bottom: 50px; }
   }
 </style>
 </head>
@@ -70,7 +75,8 @@
 <header>
   <b>TrackLine</b><span>– Wear the world's greatest circuits</span>
 </header>
-<div id="hint">Drag to spin · scroll to zoom · click a pin</div>
+<div id="hint">Drag to spin · scroll or pinch to zoom · click a pin</div>
+<div id="credit"><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors</a></div>
 
 <aside id="panel">
   <button id="toggle" aria-label="Show circuits">Circuits</button>
@@ -98,8 +104,15 @@
 <script>
 (() => {
   const R = 1;
+  const EARTH_M = 6371000;               // globe radius 1 == Earth radius
   const DEG = Math.PI / 180;
+  const MIN_ALT = 120 / EARTH_M;         // closest the camera may get (m above the surface)
+  const HEADER_H = 56;
+  const SMALL = () => innerWidth <= 760;
+  const COARSE = matchMedia("(pointer: coarse)").matches;
   const tracks = TRACKS.map(([name, country, lat, lon, handle, note], i) => ({ i, name, country, lat, lon, handle, note }));
+  const clamp = THREE.MathUtils.clamp;
+  const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
 
   // ---------- renderer / scene ----------
   const host = document.getElementById("scene");
@@ -109,17 +122,17 @@
   host.appendChild(renderer.domElement);
 
   const scene = new THREE.Scene();
-  const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.01, 100);
+  const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.01, 200);
   camera.position.copy(latLonToVec(42, 10, innerWidth / innerHeight < 0.75 ? 5 : 3.4));
 
   const controls = new THREE.OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
   controls.enablePan = false;
-  controls.minDistance = 1.15;
+  controls.enableZoom = false;           // zoom is altitude-based, handled below
+  controls.minDistance = R + MIN_ALT;
   controls.maxDistance = 6;
   controls.rotateSpeed = 0.5;
-  controls.zoomSpeed = 0.7;
   controls.autoRotate = true;
   controls.autoRotateSpeed = 0.35;
 
@@ -131,6 +144,8 @@
     const phi = (90 - lat) * DEG, theta = (lon + 180) * DEG;
     return new THREE.Vector3(-r * Math.sin(phi) * Math.cos(theta), r * Math.cos(phi), r * Math.sin(phi) * Math.sin(theta));
   }
+  const altitude = () => camera.position.length() - R;
+  const clampAlt = a => clamp(a, MIN_ALT, controls.maxDistance - R);
 
   // ---------- stars ----------
   {
@@ -161,14 +176,16 @@
   );
   scene.add(globe);
 
-  scene.add(new THREE.Mesh(
+  const atmo = new THREE.Mesh(
     new THREE.SphereGeometry(R * 1.1, 64, 64),
     new THREE.ShaderMaterial({
+      uniforms: { uK: { value: 0.6 } },
       side: THREE.BackSide, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
       vertexShader: `varying vec3 vN; void main(){ vN = normalize(normalMatrix * normal); gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
-      fragmentShader: `varying vec3 vN; void main(){ float i = pow(0.7 - dot(vN, vec3(0,0,1.0)), 3.0); gl_FragColor = vec4(1.0,1.0,1.0,1.0) * i * 0.6; }`
+      fragmentShader: `uniform float uK; varying vec3 vN; void main(){ float i = pow(0.7 - dot(vN, vec3(0,0,1.0)), 3.0); gl_FragColor = vec4(1.0,1.0,1.0,1.0) * i * uK; }`
     })
-  ));
+  );
+  scene.add(atmo);
 
   fetch("vendor/countries-50m.json")
     .then(r => r.json())
@@ -219,6 +236,189 @@
   ring.visible = false;
   scene.add(ring);
 
+  // ---------- close-up overlay (OpenStreetMap data) ----------
+  // Each track's data/tracks/<handle>.geojson is drawn into a canvas texture on a
+  // plane tangent to the globe at the circuit; the circuit itself is a glowing
+  // ribbon mesh on top whose width is kept constant in screen pixels.
+  const STYLE = {
+    bg: "#0a0a0a",
+    water: "#0e141a",
+    forest: "#161616",
+    building: "rgba(255,255,255,0.075)",
+    road: ["#3c3c3c", "#3c3c3c", "#363636", "#303030", "#2a2a2a", "#232323"],
+    roadW: [0, 13, 10, 7.5, 5.5, 3.5],      // metres, by road class
+  };
+  let overlay = null;                      // the active overlay (one at a time)
+  const geoCache = {};
+
+  function loadGeo(t) {
+    return geoCache[t.handle] || (geoCache[t.handle] =
+      fetch(`data/tracks/${encodeURIComponent(t.handle)}.geojson`)
+        .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
+        .catch(e => { delete geoCache[t.handle]; throw e; }));
+  }
+
+  function buildOverlay(t, gj) {
+    const cb = gj.circuitBbox, bb = gj.bbox;
+    const lon0 = (cb[0] + cb[2]) / 2, lat0 = (cb[1] + cb[3]) / 2;
+    const kx = 111320 * Math.cos(lat0 * DEG), ky = 110540;
+    const P = c => [(c[0] - lon0) * kx, (c[1] - lat0) * ky];
+    const [bx0, by0] = P([bb[0], bb[1]]), [bx1, by1] = P([bb[2], bb[3]]);
+    const bw = bx1 - bx0, bh = by1 - by0;
+    const [cx0, cy0] = P([cb[0], cb[1]]), [cx1, cy1] = P([cb[2], cb[3]]);
+
+    // --- surroundings texture
+    const maxT = Math.min(renderer.capabilities.maxTextureSize, SMALL() || COARSE ? 2048 : 4096);
+    const pot = v => Math.pow(2, Math.ceil(Math.log2(Math.max(64, v))));
+    const tw = bw >= bh ? maxT : Math.min(maxT, pot(maxT * bw / bh));
+    const th = bh >= bw ? maxT : Math.min(maxT, pot(maxT * bh / bw));
+    const cv = document.createElement("canvas");
+    cv.width = tw; cv.height = th;
+    const c2 = cv.getContext("2d");
+    c2.fillStyle = STYLE.bg; c2.fillRect(0, 0, tw, th);
+    const sx = tw / bw, sy = th / bh, pxm = Math.min(sx, sy);   // px per metre
+    c2.setTransform(sx, 0, 0, -sy, -bx0 * sx, by1 * sy);        // metres -> canvas px
+    c2.lineJoin = c2.lineCap = "round";
+    const trace = coords => coords.forEach((c, i) => { const [x, y] = P(c); i ? c2.lineTo(x, y) : c2.moveTo(x, y); });
+    const circuit = [];
+    for (const f of gj.features) {
+      const k = f.properties.kind, g = f.geometry;
+      if (k === "circuit") { circuit.push(g.coordinates.map(P)); continue; }
+      if (k === "water" || k === "forest" || k === "building") {
+        c2.fillStyle = STYLE[k];
+        const polys = g.type === "MultiPolygon" ? g.coordinates : [g.coordinates];
+        for (const poly of polys) { c2.beginPath(); poly.forEach(r => { trace(r); c2.closePath(); }); c2.fill("evenodd"); }
+        continue;
+      }
+      c2.beginPath();
+      (g.type === "MultiLineString" ? g.coordinates : [g.coordinates]).forEach(trace);
+      if (k === "waterline") {
+        c2.strokeStyle = STYLE.water; c2.lineWidth = Math.max(f.properties.c === 1 ? 14 : 3, 1 / pxm); c2.stroke();
+      } else if (k === "road") {
+        const c = f.properties.c || 4;
+        c2.strokeStyle = STYLE.road[c]; c2.lineWidth = Math.max(STYLE.roadW[c], 0.9 / pxm); c2.stroke();
+      }
+    }
+    const tx = new THREE.CanvasTexture(cv);
+    tx.anisotropy = renderer.capabilities.getMaxAnisotropy();
+
+    const group = new THREE.Group();
+    const up = latLonToVec(lat0, lon0).normalize();
+    const east = latLonToVec(lat0, lon0 + 0.01).sub(latLonToVec(lat0, lon0)).normalize();
+    const north = new THREE.Vector3().crossVectors(up, east).normalize();
+    group.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(east, north, up));
+    group.position.copy(up).multiplyScalar(R);
+    group.scale.setScalar(1 / EARTH_M);     // children are in metres
+    group.renderOrder = 2;
+
+    const planeMat = new THREE.ShaderMaterial({
+      transparent: true, depthWrite: false,
+      uniforms: { map: { value: tx }, uOpacity: { value: 0 }, uSize: { value: new THREE.Vector2(bw, bh) }, uFade: { value: Math.min(1800, Math.min(bw, bh) * 0.25) } },
+      vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
+      fragmentShader: `uniform sampler2D map; uniform float uOpacity; uniform vec2 uSize; uniform float uFade; varying vec2 vUv;
+        void main(){
+          vec2 e2 = min(vUv, 1.0 - vUv) * uSize;
+          float f = smoothstep(0.0, uFade, e2.x) * smoothstep(0.0, uFade, e2.y);
+          gl_FragColor = vec4(texture2D(map, vUv).rgb, f * uOpacity);
+        }`
+    });
+    const plane = new THREE.Mesh(new THREE.PlaneGeometry(bw, bh), planeMat);
+    plane.position.set((bx0 + bx1) / 2, (by0 + by1) / 2, 0);
+    plane.renderOrder = 2;
+    group.add(plane);
+
+    // --- circuit ribbon
+    const pos = [], off = [], side = [], dist = [], idx = [];
+    let total = 0;
+    for (let L of circuit) {
+      L = L.filter((p, i) => !i || p[0] !== L[i - 1][0] || p[1] !== L[i - 1][1]);
+      const n = L.length;
+      if (n < 2) continue;
+      const closed = n > 3 && Math.hypot(L[0][0] - L[n - 1][0], L[0][1] - L[n - 1][1]) < 1;
+      const base = pos.length / 3;
+      const nrm = (a, b) => { const dx = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dx, dy) || 1; return [-dy / l, dx / l]; };
+      for (let i = 0; i < n; i++) {
+        if (i) total += Math.hypot(L[i][0] - L[i - 1][0], L[i][1] - L[i - 1][1]);
+        const prev = i > 0 ? L[i - 1] : closed ? L[n - 2] : null;
+        const next = i < n - 1 ? L[i + 1] : closed ? L[1] : null;
+        const n1 = prev ? nrm(prev, L[i]) : null, n2 = next ? nrm(L[i], next) : null;
+        let m = n1 && n2 ? [n1[0] + n2[0], n1[1] + n2[1]] : (n1 || n2);
+        const ml = Math.hypot(m[0], m[1]) || 1; m = [m[0] / ml, m[1] / ml];
+        const k = 1 / Math.max(0.75, m[0] * (n1 || n2)[0] + m[1] * (n1 || n2)[1]);
+        for (const s of [1, -1]) {
+          pos.push(L[i][0], L[i][1], 4);
+          off.push(m[0] * k * s, m[1] * k * s);
+          side.push(s);
+          dist.push(total);
+        }
+        if (i < n - 1) { const a = base + i * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+      }
+    }
+    const rg = new THREE.BufferGeometry();
+    rg.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+    rg.setAttribute("aOff", new THREE.Float32BufferAttribute(off, 2));
+    rg.setAttribute("aSide", new THREE.Float32BufferAttribute(side, 1));
+    rg.setAttribute("aDist", new THREE.Float32BufferAttribute(dist, 1));
+    rg.setIndex(idx);
+    const lineMat = new THREE.ShaderMaterial({
+      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+      uniforms: { uHalfW: { value: 10 }, uCore: { value: 0.16 }, uAA: { value: 0.06 }, uProg: { value: 0 }, uHead: { value: 1 }, uHeadLen: { value: total * 0.04 }, uOpacity: { value: 0 } },
+      vertexShader: `attribute vec2 aOff; attribute float aSide; attribute float aDist; uniform float uHalfW;
+        varying float vSide; varying float vDist;
+        void main(){ vSide = aSide; vDist = aDist;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position.xy + aOff * uHalfW, position.z, 1.0); }`,
+      fragmentShader: `uniform float uCore; uniform float uAA; uniform float uProg; uniform float uHead; uniform float uHeadLen; uniform float uOpacity;
+        varying float vSide; varying float vDist;
+        void main(){
+          if (vDist > uProg) discard;
+          float d = abs(vSide);
+          float core = 1.0 - smoothstep(uCore - uAA, uCore + uAA, d);
+          float glow = exp(-d * d * 7.0) * 0.42;
+          float head = uHead * exp(-(uProg - vDist) / uHeadLen);
+          float a = (core * (0.92 + head) + glow * (1.0 + 2.5 * head)) * uOpacity;
+          gl_FragColor = vec4(1.0, 1.0, 1.0, a);
+        }`
+    });
+    const line = new THREE.Mesh(rg, lineMat);
+    line.renderOrder = 3;
+    line.frustumCulled = false;
+    group.add(line);
+    scene.add(group);
+
+    return {
+      t, group, planeMat, lineMat, total, tex: tx,
+      cw: cx1 - cx0, ch: cy1 - cy0,
+      dir: up, opacity: 0, drawStart: null,
+      dispose() {
+        scene.remove(group);
+        tx.dispose(); planeMat.dispose(); lineMat.dispose(); plane.geometry.dispose(); rg.dispose();
+      },
+    };
+  }
+
+  // Free part of the screen (not under the list panel / card) and the camera
+  // altitude at which the circuit fills most of it.
+  function freeRect() {
+    let x0 = 0, y0 = HEADER_H, x1 = innerWidth, y1 = innerHeight;
+    if (!SMALL()) {
+      x1 -= panel.offsetWidth + 16;
+      if (card.classList.contains("show")) {        // avoid the card: beside it or above it, whichever leaves more room
+        const r = card.getBoundingClientRect();
+        if ((x1 - r.right) * (y1 - y0) > (x1 - x0) * (r.top - y0)) x0 = r.right + 8; else y1 = r.top - 8;
+      }
+    } else {
+      y1 -= 44;
+      if (card.classList.contains("show")) y0 = Math.min(card.getBoundingClientRect().bottom + 8, y1 - 120);
+    }
+    const w = Math.max(120, x1 - x0), h = Math.max(120, y1 - y0);
+    return { w, h, cx: (x0 + x1) / 2, cy: (y0 + y1) / 2 };
+  }
+  function fitAltitude(ov) {
+    const f = freeRect();
+    const mpp = Math.max(ov.cw / (0.8 * f.w), ov.ch / (0.8 * f.h), 0.4);   // metres per pixel
+    return mpp * innerHeight / (2 * Math.tan(camera.fov * DEG / 2)) / EARTH_M;
+  }
+
   // ---------- UI ----------
   const list = document.getElementById("list");
   const panel = document.getElementById("panel");
@@ -238,12 +438,16 @@
   });
   document.getElementById("toggle").onclick = () => panel.classList.toggle("collapsed");
   card.querySelector(".close").onclick = () => select(null);
-  if (innerWidth <= 760) panel.classList.add("collapsed");
+  if (SMALL()) panel.classList.add("collapsed");
 
   function select(t) {
     selected = t;
     document.querySelectorAll(".item.sel").forEach(el => el.classList.remove("sel"));
-    if (!t) { card.classList.remove("show"); ring.visible = false; return; }
+    if (!t) {
+      card.classList.remove("show"); ring.visible = false;
+      if (altitude() < 0.9) flyTo(camera.position.clone().normalize(), 1.3);   // back out to the globe
+      return;
+    }
     t.el.classList.add("sel");
     t.el.scrollIntoView({ block: "nearest" });
     document.getElementById("c-name").textContent = t.name;
@@ -254,33 +458,78 @@
     ring.position.copy(t.dir.clone().multiplyScalar(R + 0.001));
     ring.lookAt(t.dir.clone().multiplyScalar(2));
     ring.visible = true;
-    if (innerWidth <= 760) panel.classList.add("collapsed");
-    flyTo(t.dir);
+    if (SMALL()) panel.classList.add("collapsed");
+
+    if (overlay && overlay.t === t) { overlay.drawStart = null; flyTo(overlay.dir, fitAltitude(overlay)); return; }
+    flyTo(t.dir, 4000 / EARTH_M);           // provisional target until the data arrives
+    loadGeo(t).then(gj => {
+      if (selected !== t) return;
+      if (overlay) overlay.dispose();
+      overlay = buildOverlay(t, gj);
+      const a1 = fitAltitude(overlay);
+      if (fly && fly.t < 0.85) { fly.to = overlay.dir.clone(); fly.a1 = a1; }
+      else flyTo(overlay.dir, a1);
+    }).catch(() => { /* no close-up data: stay at the provisional view */ });
   }
 
   // ---------- camera fly-to ----------
-  let fly = null;
-  function flyTo(dir) {
+  let fly = null, zoomGoal = null;
+  // OrbitControls keeps rotation momentum (e.g. from auto-rotate) privately; at
+  // close range even a tiny leftover drifts the view off the circuit, so drain it.
+  function stopMomentum() {
+    const p = camera.position.clone(), was = controls.autoRotate;
     controls.autoRotate = false;
-    const from = camera.position.clone();
-    fly = { from: from.clone().normalize(), to: dir.clone(), r0: from.length(), r1: Math.max(Math.min(from.length(), 2.2), 1.7), t: 0 };
+    for (let i = 0; i < 250; i++) controls.update();
+    camera.position.copy(p); camera.lookAt(0, 0, 0);
+    controls.autoRotate = was;
   }
+  function flyTo(dir, alt1) {
+    controls.autoRotate = false;
+    stopMomentum();
+    zoomGoal = null;
+    const from = camera.position.clone().normalize();
+    const a0 = altitude();
+    const ang = from.angleTo(dir);
+    const dur = 1.1 + Math.min(1.5, Math.abs(Math.log(alt1 / a0)) * 0.16) + Math.min(0.8, ang * 0.5);
+    fly = { from, to: dir.clone().normalize(), a0, a1: alt1, ang, t: 0, dur };
+  }
+  const ease = x => x < .5 ? 4 * x ** 3 : 1 - Math.pow(-2 * x + 2, 3) / 2;
   function stepFly(dt) {
-    fly.t = Math.min(1, fly.t + dt / 1.4);
-    const e = fly.t < .5 ? 4 * fly.t ** 3 : 1 - Math.pow(-2 * fly.t + 2, 3) / 2;
+    fly.t = Math.min(1, fly.t + dt / fly.dur);
+    const er = ease(Math.min(1, fly.t * 1.3)), ez = ease(fly.t);
     const q = new THREE.Quaternion().setFromUnitVectors(fly.from, fly.to);
-    const qi = new THREE.Quaternion().slerp(q, e);
-    const r = fly.r0 + (fly.r1 - fly.r0) * e + Math.sin(e * Math.PI) * 0.4;
-    camera.position.copy(fly.from.clone().applyQuaternion(qi).multiplyScalar(r));
+    const qi = new THREE.Quaternion().slerp(q, er);
+    const a = Math.exp(Math.log(fly.a0) + (Math.log(fly.a1) - Math.log(fly.a0)) * ez)
+      + Math.sin(er * Math.PI) * Math.min(1, fly.ang) * 0.6;
+    camera.position.copy(fly.from.clone().applyQuaternion(qi).multiplyScalar(R + a));
     camera.lookAt(0, 0, 0);
-    if (fly.t >= 1) fly = null;
+    if (fly.t >= 1) { fly = null; stopMomentum(); }
   }
+
+  // ---------- zoom (wheel / pinch), proportional to altitude ----------
+  const el = renderer.domElement;
+  el.addEventListener("wheel", e => {
+    e.preventDefault();                       // keep the host page from scrolling when embedded
+    fly = null; controls.autoRotate = false;
+    const dy = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaMode === 2 ? e.deltaY * innerHeight : e.deltaY;
+    zoomGoal = clampAlt((zoomGoal == null ? altitude() : zoomGoal) * Math.exp(clamp(dy, -200, 200) * 0.0016));
+  }, { passive: false });
+  let pinch = null;
+  const touchDist = e => Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY) || 1;
+  el.addEventListener("touchstart", e => {
+    if (e.touches.length === 2) { pinch = { d: touchDist(e), a: altitude() }; fly = null; zoomGoal = null; controls.autoRotate = false; }
+  }, { passive: true });
+  el.addEventListener("touchmove", e => {
+    if (pinch && e.touches.length === 2) camera.position.setLength(R + clampAlt(pinch.a * pinch.d / touchDist(e)));
+  }, { passive: true });
+  el.addEventListener("touchend", e => { if (e.touches.length < 2) pinch = null; });
 
   // ---------- picking ----------
   const ray = new THREE.Raycaster();
   const mouse = new THREE.Vector2();
-  let downAt = null, hovered = null;
+  let downAt = null, hovered = null, pinVis = 1;
   function pick(x, y) {
+    if (pinVis < 0.3) return null;
     mouse.set(x / innerWidth * 2 - 1, -(y / innerHeight) * 2 + 1);
     ray.setFromCamera(mouse, camera);
     const hits = ray.intersectObjects(hitTargets);
@@ -289,16 +538,16 @@
     if (g && g.distance < hits[0].distance - 0.02) return null; // pin is behind the globe
     return hits[0].object.userData.track;
   }
-  renderer.domElement.addEventListener("pointermove", e => {
+  el.addEventListener("pointermove", e => {
     if (e.pointerType !== "mouse") return;
     const t = pick(e.clientX, e.clientY);
     hovered = t;
-    renderer.domElement.style.cursor = t ? "pointer" : "grab";
+    el.style.cursor = t ? "pointer" : "grab";
     if (t) { tip.style.display = "block"; tip.style.left = e.clientX + "px"; tip.style.top = e.clientY + "px"; tip.textContent = `${t.name} — ${t.country}`; }
     else tip.style.display = "none";
   });
-  renderer.domElement.addEventListener("pointerdown", e => { downAt = [e.clientX, e.clientY]; fly = null; controls.autoRotate = false; });
-  renderer.domElement.addEventListener("pointerup", e => {
+  el.addEventListener("pointerdown", e => { downAt = [e.clientX, e.clientY]; fly = null; zoomGoal = null; controls.autoRotate = false; });
+  el.addEventListener("pointerup", e => {
     if (!downAt || Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) > 6) return;
     const t = pick(e.clientX, e.clientY);
     if (t) select(t);
@@ -311,17 +560,70 @@
 
   // ---------- loop ----------
   const clock = new THREE.Clock();
+  const view = { x: 0, y: 0 };
   (function loop() {
-    const dt = clock.getDelta(), time = clock.elapsedTime;
-    if (fly) stepFly(dt); else controls.update();
+    const dt = Math.min(clock.getDelta(), 0.1), time = clock.elapsedTime;
+    if (fly) stepFly(dt);
+    else {
+      if (zoomGoal != null) {
+        const a = altitude(), k = Math.min(1, dt * 9);
+        const na = Math.exp(Math.log(a) + (Math.log(zoomGoal) - Math.log(a)) * k);
+        camera.position.setLength(R + na);
+        if (Math.abs(Math.log(na / zoomGoal)) < 0.002) zoomGoal = null;
+      }
+      controls.update();
+    }
+    const alt = altitude();
+    controls.rotateSpeed = clamp(alt * 0.2, 0.00002, 0.5);   // dragging moves the ground under your finger
+
+    // keep the near plane proportional to the altitude so close-ups don't clip
+    const near = clamp(alt * 0.25, 1e-7, 0.01);
+    // center the view on the part of the screen not covered by the panel / card
+    const f = freeRect();
+    view.x += (innerWidth / 2 - f.cx - view.x) * Math.min(1, dt * 6);
+    view.y += (innerHeight / 2 - f.cy - view.y) * Math.min(1, dt * 6);
+    camera.near = near;
+    camera.setViewOffset(innerWidth, innerHeight, view.x, view.y, innerWidth, innerHeight);
+
     sun.position.copy(camera.position).add(new THREE.Vector3(1.5, 1, 0));
-    const s = THREE.MathUtils.clamp((camera.position.length() - R) / 1.8, 0.2, 1.3);
-    tracks.forEach(t => t.obj.scale.setScalar(s * (t === selected ? 1.7 : t === hovered ? 1.4 : 1)));
+    pinVis = smooth(0.02, 0.09, alt);
+    // up close the low-res globe texture just blurs (coastline strokes glare), so dim it
+    const gk = smooth(0.004, 0.08, alt);
+    globe.material.color.setScalar(0.22 + 0.78 * gk);
+    globe.material.specular.setScalar(0x22 / 255 * gk);
+    atmo.material.uniforms.uK.value = 0.6 * smooth(0.01, 0.12, alt);
+    const s = clamp((camera.position.length() - R) / 1.8, 0.2, 1.3) * Math.max(pinVis, 0.001);
+    tracks.forEach(t => { t.obj.visible = pinVis > 0.01; t.obj.scale.setScalar(s * (t === selected ? 1.7 : t === hovered ? 1.4 : 1)); });
     if (ring.visible) {
       const p = (time * 0.8) % 1;
       ring.scale.setScalar(s * (1 + p * 2.2));
-      ring.material.opacity = 1 - p;
+      ring.material.opacity = (1 - p) * pinVis;
     }
+
+    if (overlay) {
+      const ov = overlay;
+      const fa = fitAltitude(ov);
+      const d = camera.position.distanceTo(ov.group.position);
+      const target = 1 - smooth(fa * 4, fa * 14, d);
+      ov.opacity += (target - ov.opacity) * Math.min(1, dt * 5);
+      if (ov.opacity < 0.002 && target === 0) ov.opacity = 0;
+      ov.group.visible = ov.opacity > 0;
+      ov.planeMat.uniforms.uOpacity.value = ov.opacity;
+      ov.lineMat.uniforms.uOpacity.value = ov.opacity;
+      // ribbon width: constant ~9 px on screen
+      const mpp = d * EARTH_M * 2 * Math.tan(camera.fov * DEG / 2) / innerHeight;
+      ov.lineMat.uniforms.uHalfW.value = 9 * mpp;
+      // "draw itself" once per selection, as soon as the close-up is in view
+      if (ov.drawStart == null && !fly && ov.opacity > 0.6) ov.drawStart = time;
+      const dur = clamp(1.6 + ov.total / 6000, 1.8, 3.2);
+      const p = ov.drawStart == null ? 0 : clamp((time - ov.drawStart) / dur, 0, 1);
+      const ep = 1 - Math.pow(1 - p, 2.2);
+      // after the end the bright tip runs off and fades
+      ov.lineMat.uniforms.uProg.value = ov.drawStart == null ? -1
+        : ep * ov.total + Math.max(0, time - ov.drawStart - dur) * ov.total * 0.6;
+    }
+
+    camera.updateProjectionMatrix();
     renderer.render(scene, camera);
     requestAnimationFrame(loop);
   })();
