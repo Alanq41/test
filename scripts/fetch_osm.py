@@ -294,7 +294,9 @@ def tidy_circuit(lines, loc, snap_m=40.0, loop_m=600.0):
                 break
     # close a loop whose two ends nearly meet
     lines = [l + [l[0]] if len(l) > 3 and l[0] != l[-1] and d(l[0], l[-1]) < snap_m else l for l in lines]
-    return lines
+    # drop short leftovers (layout connectors, pit entries) so only the main lap is drawn
+    longest = max(length(l) for l in lines)
+    return [l for l in lines if length(l) >= 0.15 * longest]
 
 
 # ------------------------------------------------------------- coastline ---
