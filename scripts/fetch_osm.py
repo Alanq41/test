@@ -42,7 +42,7 @@ ENDPOINTS = [
 USER_AGENT = "trackline-globe-fetch/1.0 (static site build script)"
 
 MARGIN_M = 2500          # surroundings kept within this distance of the circuit
-BUILDING_M = 1000        # buildings only this close (they dominate file size)
+BUILDING_M = 800         # buildings only this close (they dominate file size)
 SEARCH_M = 3000          # radius around the tracks.js point to look for the circuit
 
 # Per-track tweaks. `search` = circuit search radius (m), `prefer` = regex the
@@ -522,7 +522,7 @@ out geom;"""
             xy = clip_ring(xy, box)
             if len(xy) < 3:
                 continue
-            xy = simplify(xy + [xy[0]], max(tol, 2.5) if kind == "building" else tol)[:-1]
+            xy = simplify(xy + [xy[0]], max(tol, 2.5) if kind == "building" else max(tol * 2, 3.0))[:-1]
             if len(xy) < 3 or abs(ring_area(xy)) < min_area:
                 continue
             c = out_coords(xy)
