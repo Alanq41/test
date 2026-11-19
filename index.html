@@ -344,7 +344,7 @@
         const n1 = prev ? nrm(prev, L[i]) : null, n2 = next ? nrm(L[i], next) : null;
         let m = n1 && n2 ? [n1[0] + n2[0], n1[1] + n2[1]] : (n1 || n2);
         const ml = Math.hypot(m[0], m[1]) || 1; m = [m[0] / ml, m[1] / ml];
-        const k = 1 / Math.max(0.4, m[0] * (n1 || n2)[0] + m[1] * (n1 || n2)[1]);
+        const k = 1 / Math.max(0.75, m[0] * (n1 || n2)[0] + m[1] * (n1 || n2)[1]);
         for (const s of [1, -1]) {
           pos.push(L[i][0], L[i][1], 4);
           off.push(m[0] * k * s, m[1] * k * s);

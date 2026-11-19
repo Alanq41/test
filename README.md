@@ -31,6 +31,7 @@ python3 scripts/fetch_osm.py monza-t-shirt   # one track
 
 It queries the Overpass API (trying several mirrors), finds the circuit (an OSM `type=circuit` relation, or else
 `highway=raceway` ways) and everything within ~2.5 km, and writes simplified GeoJSON. Raw responses are cached in
-`scripts/.cache/`. Per-track hints (search radius, preferred layout name) are in `TRACK_OPTS` at the top of the script.
+`scripts/.cache/`. Per-track hints are in `TRACK_OPTS` at the top of the script: several circuits (Isle of Man, Le Mans, Long Beach,
+Nordschleife) are mapped as route relations rather than `type=circuit`, so their relation ids are pinned there.
 
 Map data © OpenStreetMap contributors, available under the [ODbL](https://www.openstreetmap.org/copyright).
