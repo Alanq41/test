@@ -54,7 +54,8 @@ TRACK_OPTS = {
     "isle-of-man-1": {"relation": 188240},
     # the full 24h layout is a route=raceway relation; the type=circuit nearby is Bugatti
     "le-mans-t-shirt": {"relation": 2126739},
-    "long-beach-1": {"prefer": r"long beach"},
+    # street circuit: only fragments are tagged raceway; the full lap is a route relation
+    "long-beach-1": {"relation": 18052024},
     "monaco-t-shirt": {"avoid": r"e-?prix|formula e"},
     "nurburgring-t-shirt": {"search": 6000, "prefer": r"nordschleife"},
     "silverstone-kart-track-1": {"search": 2000, "prefer": r"kart"},
