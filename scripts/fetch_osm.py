@@ -61,6 +61,7 @@ TRACK_OPTS = {
     # the Nordschleife is a road route relation; the type=circuit nearby is the GP track
     "nurburgring-t-shirt": {"relation": 38566},
     # the kart track (raceway ways tagged sport=karting) sits beside the GP circuit
+    "silesia-ring-t-shirt": {"avoid": r"serwisowa|eco-marathon"},     # pit lane, alternate layout
     "silverstone-kart-track-1": {"ways": "way[highway=raceway][sport=karting](around:350,52.0752,-1.0184)"},
 }
 
@@ -413,6 +414,8 @@ out geom;"""
             if el["type"] == "way" and tags.get("highway") == "raceway" and tags.get("area") != "yes":
                 n = (tags.get("name", "") + " " + tags.get("service", "")).lower()
                 if "pit" in n or "stand" in n:
+                    continue
+                if opts.get("avoid") and re.search(opts["avoid"], n, re.I):
                     continue
                 circuit.append(way_coords(el))
         print(f"    raceway ways: {len(circuit)}")
