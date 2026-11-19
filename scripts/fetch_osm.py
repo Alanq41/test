@@ -543,6 +543,8 @@ out geom;"""
             if not near(xy):
                 continue
             hw = tags.get("highway")
+            if hw in ROAD_CLASSES and ROAD_CLASSES[hw] == 5 and extent > 4000:
+                continue                     # service roads/tracks: just clutter on big circuits
             if hw in ROAD_CLASSES:
                 add_line("road", [way_coords(el)], {"c": ROAD_CLASSES[hw]})
             elif "building" in tags:
