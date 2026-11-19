@@ -52,7 +52,8 @@ TRACK_OPTS = {
     "bathurst-t-shirt": {"prefer": r"panorama"},
     # the TT course is mapped as a motorcycle route relation, not a circuit
     "isle-of-man-1": {"relation": 188240},
-    "le-mans-t-shirt": {"search": 7000, "prefer": r"sarthe|24"},
+    # the full 24h layout is a route=raceway relation; the type=circuit nearby is Bugatti
+    "le-mans-t-shirt": {"relation": 2126739},
     "long-beach-1": {"prefer": r"long beach"},
     "monaco-t-shirt": {"avoid": r"e-?prix|formula e"},
     "nurburgring-t-shirt": {"search": 6000, "prefer": r"nordschleife"},
