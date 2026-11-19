@@ -47,7 +47,8 @@ SEARCH_M = 3000          # radius around the tracks.js point to look for the cir
 
 # Per-track tweaks. `search` = circuit search radius (m), `prefer` = regex the
 # circuit relation's name should match, `avoid` = regex for names to skip,
-# `relation` = use this OSM relation id as the circuit.
+# `relation` = use this OSM relation id as the circuit, `ways` = Overpass
+# selector for the circuit's ways (when it has no relation).
 TRACK_OPTS = {
     "bathurst-t-shirt": {"prefer": r"panorama"},
     # the TT course is mapped as a motorcycle route relation, not a circuit
@@ -58,7 +59,8 @@ TRACK_OPTS = {
     "long-beach-1": {"relation": 18052024},
     "monaco-t-shirt": {"avoid": r"e-?prix|formula e"},
     "nurburgring-t-shirt": {"search": 6000, "prefer": r"nordschleife"},
-    "silverstone-kart-track-1": {"search": 2000, "prefer": r"kart"},
+    # the kart track (raceway ways tagged sport=karting) sits beside the GP circuit
+    "silverstone-kart-track-1": {"ways": "way[highway=raceway][sport=karting](around:350,52.0752,-1.0184)"},
 }
 
 ROAD_CLASSES = {
@@ -365,7 +367,9 @@ def fetch_track(t):
     search = opts.get("search", SEARCH_M)
     print(f"[{t['handle']}] {t['name']}", flush=True)
 
-    if opts.get("relation"):
+    if opts.get("ways"):
+        q1 = f"[out:json][timeout:120];\n{opts['ways']};\nout geom;"
+    elif opts.get("relation"):
         q1 = f"[out:json][timeout:120];\nrel({opts['relation']});\nout geom;"
     else:
         q1 = f"""[out:json][timeout:120];
@@ -394,8 +398,6 @@ out geom;"""
         lines = [way_coords(m) for m in el.get("members", [])
                  if m["type"] == "way" and "pit" not in (m.get("role") or "").lower()]
         lines = [l for l in lines if len(l) > 1]
-        if opts.get("relation"):
-            lines = [l for l in lines if l]
         if lines:
             score = 1 if opts.get("prefer") and re.search(opts["prefer"], name, re.I) else 0
             rels.append((score, length(lines), name, lines))
