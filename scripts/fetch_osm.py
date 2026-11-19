@@ -42,6 +42,7 @@ ENDPOINTS = [
 USER_AGENT = "trackline-globe-fetch/1.0 (static site build script)"
 
 MARGIN_M = 2500          # surroundings kept within this distance of the circuit
+BUILDING_M = 1200        # buildings only this close (they dominate file size)
 SEARCH_M = 3000          # radius around the tracks.js point to look for the circuit
 
 # Per-track tweaks. `search` = circuit search radius (m), `prefer` = regex the
@@ -406,6 +407,7 @@ out geom;"""
     # spatial filter: within MARGIN_M of the circuit
     cell = MARGIN_M
     grid = set()
+    samples = {}
     for l in circuit:
         p = [loc.fwd(*c) for c in l]
         for a, b in zip(p, p[1:]):
@@ -414,6 +416,19 @@ out geom;"""
                 x = a[0] + (b[0] - a[0]) * i / steps
                 y = a[1] + (b[1] - a[1]) * i / steps
                 grid.add((int(math.floor(x / cell)), int(math.floor(y / cell))))
+                samples.setdefault((int(math.floor(x / 200)), int(math.floor(y / 200))), []).append((x, y))
+
+    def near_dist(xy, dist):
+        # tighter check for buildings: any vertex within `dist` of a circuit sample
+        for x, y in xy[:: max(1, len(xy) // 4)]:
+            gx, gy = int(math.floor(x / 200)), int(math.floor(y / 200))
+            r = int(dist // 200) + 1
+            for dx in range(-r, r + 1):
+                for dy in range(-r, r + 1):
+                    for sx, sy in samples.get((gx + dx, gy + dy), ()):
+                        if (sx - x) ** 2 + (sy - y) ** 2 < dist * dist:
+                            return True
+        return False
 
     def near(xy):
         bx0 = min(p[0] for p in xy); bx1 = max(p[0] for p in xy)
@@ -464,7 +479,7 @@ out geom;"""
             xy = clip_ring(xy, box)
             if len(xy) < 3:
                 continue
-            xy = simplify(xy + [xy[0]], tol)[:-1]
+            xy = simplify(xy + [xy[0]], max(tol, 2.5) if kind == "building" else tol)[:-1]
             if len(xy) < 3 or abs(ring_area(xy)) < min_area:
                 continue
             c = out_coords(xy)
@@ -491,7 +506,8 @@ out geom;"""
             if hw in ROAD_CLASSES:
                 add_line("road", [way_coords(el)], {"c": ROAD_CLASSES[hw]})
             elif "building" in tags:
-                add_poly("building", [way_coords(el)], 40 * max(1, area_scale))
+                if near_dist(xy, BUILDING_M):
+                    add_poly("building", [way_coords(el)], 80 * max(1, area_scale))
             elif tags.get("waterway") in ("river", "canal", "stream"):
                 add_line("waterline", [way_coords(el)], {"c": 1 if tags["waterway"] != "stream" else 2})
             elif tags.get("natural") == "water" or tags.get("waterway") in ("riverbank", "dock") \
