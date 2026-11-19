@@ -33,5 +33,7 @@ It queries the Overpass API (trying several mirrors), finds the circuit (an OSM 
 `highway=raceway` ways) and everything within ~2.5 km, and writes simplified GeoJSON. Raw responses are cached in
 `scripts/.cache/`. Per-track hints are in `TRACK_OPTS` at the top of the script: several circuits (Isle of Man, Le Mans, Long Beach,
 Nordschleife) are mapped as route relations rather than `type=circuit`, so their relation ids are pinned there.
+The Nürburgring (24h layout: Nordschleife + GP section) and the Silverstone kart track use a `loop` override: the exact
+lap as ordered OSM way ids, chosen to match the TrackLine shirt print.
 
 Map data © OpenStreetMap contributors, available under the [ODbL](https://www.openstreetmap.org/copyright).

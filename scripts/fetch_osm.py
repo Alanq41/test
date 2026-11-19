@@ -48,7 +48,11 @@ SEARCH_M = 3000          # radius around the tracks.js point to look for the cir
 # Per-track tweaks. `search` = circuit search radius (m), `prefer` = regex the
 # circuit relation's name should match, `avoid` = regex for names to skip,
 # `relation` = use this OSM relation id as the circuit, `ways` = Overpass
-# selector for the circuit's ways (when it has no relation).
+# selector for the circuit's ways (when it has no relation), `loop` = the exact
+# lap as an ordered list of OSM way ids: `id` = whole way in its own direction,
+# `-id` = whole way reversed, `[id, i, j]` = that way from node index i to j
+# (j < i runs backwards). Use `loop` when the lap must match the TrackLine
+# shirt print and no single relation describes it.
 TRACK_OPTS = {
     "bathurst-t-shirt": {"prefer": r"panorama"},
     # the TT course is mapped as a motorcycle route relation, not a circuit
@@ -58,11 +62,34 @@ TRACK_OPTS = {
     # street circuit: only fragments are tagged raceway; the full lap is a route relation
     "long-beach-1": {"relation": 18052024},
     "monaco-t-shirt": {"avoid": r"e-?prix|formula e"},
-    # the Nordschleife is a road route relation; the type=circuit nearby is the GP track
-    "nurburgring-t-shirt": {"relation": 38566},
-    # the kart track (raceway ways tagged sport=karting) sits beside the GP circuit
+    # As on the shirt: the 24h layout = Nordschleife (route relation 38566) plus the
+    # GP-circuit section at the start/finish, joined via T13 and the
+    # "Variante 24h-Rennen" into one continuous lap.
+    "nurburgring-t-shirt": {
+        "name": "Nürburgring 24h (Nordschleife + GP)",
+        "loop": [
+            41395647, 683006908, 245166664, 799394508, 799394509, 683061804, 799394510, 799394511,
+            799394512, 799394513, 414785755, 414785756, 799394515, 799394514, 799394516, 799394517,
+            799394518, 799394519, 799394520, 799394521, 799394522, 799394523, 799394524, 41395652,
+            683303211, 683303210, 683303209, 683303208, 41792406, 1571450724, 799394494, 799394495,
+            41395668, [41395670,0,1], 27852583, [1149161210,28,45], [1149161208,0,5], 31010602, [1149161208,76,80], 1443047846,
+            1443047847, 1079809244, 820679447, 820679448, 820679446, 1113009623, 820679445, 820330155,
+            820330154, 1113009624, 820330153, 820330152, 1079809245, 1443047845, 1443047844, 27852990,
+            1149161211, [1149161210,0,6], 26543901, [41395670,10,13], 41395673, 1009142894, 1009142895, 799394496,
+            799394497, 41395681, 41395684, 799394498, 799394499, 799394500, 799394501, 799394502,
+            799394503, 799394504, 799394505, 799394506, 799394507, 683061813, 683061814,
+        ],
+    },
     "silesia-ring-t-shirt": {"avoid": r"serwisowa|eco-marathon"},     # pit lane, alternate layout
-    "silverstone-kart-track-1": {"ways": "way[highway=raceway][sport=karting](around:350,52.0752,-1.0184)"},
+    # The kart track beside the GP circuit has several layouts and link roads; keep
+    # only the lap printed on the shirt (outer loop with the spiral hairpin).
+    "silverstone-kart-track-1": {
+        "name": "Kart Silverstone",
+        "loop": [
+            1430385979, -1526452832, [1526452829,25,0], [1526452830,14,12], [1526452835,0,10],
+            1526452836, 1430385980, -1526452831, 1526452833,
+        ],
+    },
 }
 
 ROAD_CLASSES = {
@@ -82,13 +109,24 @@ def parse_tracks():
     return [dict(name=n, country=c, lat=float(la), lon=float(lo), handle=h) for n, c, la, lo, h in rows]
 
 
-def overpass(query, label):
+def overpass(query, label, bbox=None):
+    """Run an Overpass query (cached). With bbox=(s, w, n, e), a cached answer for
+    the same label whose bbox covers this one is reused: the caller clips anyway."""
     os.makedirs(CACHE_DIR, exist_ok=True)
     key = hashlib.sha1(query.encode()).hexdigest()[:16]
     path = os.path.join(CACHE_DIR, f"{label}-{key}.json")
     if os.path.exists(path):
         with open(path, encoding="utf-8") as f:
             return json.load(f)
+    if bbox:
+        for name in sorted(os.listdir(CACHE_DIR)):
+            side = os.path.join(CACHE_DIR, name)
+            if name.startswith(label + "-") and name.endswith(".bbox"):
+                cs, cw, cn, ce = json.load(open(side))
+                if cs <= bbox[0] and cw <= bbox[1] and cn >= bbox[2] and ce >= bbox[3]:
+                    print(f"    {label}: reusing cached {name[:-5]}")
+                    with open(side[:-5], encoding="utf-8") as f:
+                        return json.load(f)
     body = urllib.parse.urlencode({"data": query}).encode()
     delay = 10
     for attempt in range(40):
@@ -102,6 +140,9 @@ def overpass(query, label):
                 raise RuntimeError(data["remark"][:200])
             with open(path, "wb") as f:
                 f.write(raw)
+            if bbox:
+                with open(path + ".bbox", "w") as f:
+                    json.dump(list(bbox), f)
             return data
         except Exception as e:  # noqa: BLE001 - any failure: try the next mirror
             msg = str(e).splitlines()[0][:120]
@@ -360,6 +401,63 @@ def sea_polygons(chains, box):
     return rings
 
 
+def osm_api_ways(ids, label):
+    """Node geometry of the given way ids, from the main OSM API (id lookups are
+    cheap there, and it is more reliable than the public Overpass mirrors).
+    Returns {way_id: [(lon, lat), ...]} in each way's node order. Cached."""
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    ids = sorted(set(ids))
+    key = hashlib.sha1(",".join(map(str, ids)).encode()).hexdigest()[:16]
+    path = os.path.join(CACHE_DIR, f"{label}-{key}.json")
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            return {int(k): [tuple(c) for c in v] for k, v in json.load(f).items()}
+
+    def get(url):
+        for attempt in range(5):
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+                with urllib.request.urlopen(req, timeout=120) as r:
+                    return json.loads(r.read())
+            except Exception as e:  # noqa: BLE001
+                print(f"    {label}: OSM API failed ({str(e)[:80]}); retry", flush=True)
+                time.sleep(5 * (attempt + 1))
+        raise SystemExit(f"OSM API lookup for {label} failed")
+
+    way_nodes = {}
+    for i in range(0, len(ids), 100):
+        chunk = ",".join(map(str, ids[i:i + 100]))
+        for el in get(f"https://api.openstreetmap.org/api/0.6/ways.json?ways={chunk}")["elements"]:
+            way_nodes[el["id"]] = el["nodes"]
+    node_ids = sorted({n for v in way_nodes.values() for n in v})
+    coords = {}
+    for i in range(0, len(node_ids), 300):
+        chunk = ",".join(map(str, node_ids[i:i + 300]))
+        for el in get(f"https://api.openstreetmap.org/api/0.6/nodes.json?nodes={chunk}")["elements"]:
+            coords[el["id"]] = (el["lon"], el["lat"])
+    out = {w: [coords[n] for n in nds] for w, nds in way_nodes.items()}
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({str(k): v for k, v in out.items()}, f)
+    return out
+
+
+def loop_line(loop, geom):
+    """Concatenate the `loop` override's way pieces into one polyline."""
+    line = []
+    for item in loop:
+        if isinstance(item, list):
+            wid, i, j = item
+            g = geom[wid]
+            part = g[i:j + 1] if j >= i else g[j:i + 1][::-1]
+        else:
+            g = geom[abs(item)]
+            part = g if item > 0 else g[::-1]
+        if line and part[0] != line[-1]:
+            raise SystemExit(f"loop override is not continuous at way {item}")
+        line += part if not line else part[1:]
+    return line
+
+
 # ------------------------------------------------------------------ main ---
 
 def way_coords(el):
@@ -371,7 +469,9 @@ def fetch_track(t):
     search = opts.get("search", SEARCH_M)
     print(f"[{t['handle']}] {t['name']}", flush=True)
 
-    if opts.get("ways"):
+    if opts.get("loop"):
+        q1 = None
+    elif opts.get("ways"):
         q1 = f"[out:json][timeout:120];\n{opts['ways']};\nout geom;"
     elif opts.get("relation"):
         q1 = f"[out:json][timeout:120];\nrel({opts['relation']});\nout geom;"
@@ -382,7 +482,7 @@ def fetch_track(t):
   way[highway=raceway](around:{search},{t['lat']},{t['lon']});
 );
 out geom;"""
-    d1 = overpass(q1, t["handle"] + "-circuit")
+    d1 = overpass(q1, t["handle"] + "-circuit") if q1 else {"elements": []}
     loc = Local(t["lat"], t["lon"])
 
     def length(lines):
@@ -405,7 +505,14 @@ out geom;"""
         if lines:
             score = 1 if opts.get("prefer") and re.search(opts["prefer"], name, re.I) else 0
             rels.append((score, length(lines), name, lines))
-    if rels:
+    if opts.get("loop"):
+        geom = osm_api_ways([abs(x[0]) if isinstance(x, list) else abs(x) for x in opts["loop"]],
+                            t["handle"] + "-loop")
+        line = loop_line(opts["loop"], geom)
+        circuit, cname = [line], opts.get("name", t["name"])
+        print(f"    loop override: {len(opts['loop'])} pieces, {length(circuit) / 1000:.2f} km, "
+              f"closed={'yes' if line[0] == line[-1] else 'no'}")
+    elif rels:
         rels.sort(key=lambda r: (r[0], r[1]), reverse=True)
         _, _, cname, circuit = rels[0]
         print(f"    circuit relation: {cname!r} ({len(rels)} candidates)")
@@ -451,7 +558,7 @@ out geom;"""
   {building}
 );
 out geom;"""
-    d2 = overpass(q2, t["handle"] + "-area")
+    d2 = overpass(q2, t["handle"] + "-area", bbox=(s, w, n, e))
 
     # spatial filter: within MARGIN_M of the circuit
     cell = MARGIN_M
