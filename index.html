@@ -176,14 +176,16 @@
   );
   scene.add(globe);
 
-  scene.add(new THREE.Mesh(
+  const atmo = new THREE.Mesh(
     new THREE.SphereGeometry(R * 1.1, 64, 64),
     new THREE.ShaderMaterial({
+      uniforms: { uK: { value: 0.6 } },
       side: THREE.BackSide, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
       vertexShader: `varying vec3 vN; void main(){ vN = normalize(normalMatrix * normal); gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
-      fragmentShader: `varying vec3 vN; void main(){ float i = pow(0.7 - dot(vN, vec3(0,0,1.0)), 3.0); gl_FragColor = vec4(1.0,1.0,1.0,1.0) * i * 0.6; }`
+      fragmentShader: `uniform float uK; varying vec3 vN; void main(){ float i = pow(0.7 - dot(vN, vec3(0,0,1.0)), 3.0); gl_FragColor = vec4(1.0,1.0,1.0,1.0) * i * uK; }`
     })
-  ));
+  );
+  scene.add(atmo);
 
   fetch("vendor/countries-50m.json")
     .then(r => r.json())
@@ -585,6 +587,11 @@
 
     sun.position.copy(camera.position).add(new THREE.Vector3(1.5, 1, 0));
     pinVis = smooth(0.02, 0.09, alt);
+    // up close the low-res globe texture just blurs (coastline strokes glare), so dim it
+    const gk = smooth(0.004, 0.08, alt);
+    globe.material.color.setScalar(0.22 + 0.78 * gk);
+    globe.material.specular.setScalar(0x22 / 255 * gk);
+    atmo.material.uniforms.uK.value = 0.6 * smooth(0.01, 0.12, alt);
     const s = clamp((camera.position.length() - R) / 1.8, 0.2, 1.3) * Math.max(pinVis, 0.001);
     tracks.forEach(t => { t.obj.visible = pinVis > 0.01; t.obj.scale.setScalar(s * (t === selected ? 1.7 : t === hovered ? 1.4 : 1)); });
     if (ring.visible) {

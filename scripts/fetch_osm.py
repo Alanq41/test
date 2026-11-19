@@ -259,6 +259,38 @@ def join_lines(lines):
     return lines
 
 
+def tidy_circuit(lines, loc, snap_m=40.0, loop_m=600.0):
+    """Drop tiny closed loops (roundabouts in route relations) and join pieces
+    whose ends are within snap_m of each other."""
+    def length(l):
+        p = [loc.fwd(*c) for c in l]
+        return sum(math.dist(a, b) for a, b in zip(p, p[1:]))
+    longest = max(length(l) for l in lines)
+    lines = [l for l in lines if not (l[0] == l[-1] and length(l) < min(loop_m, longest * 0.5))]
+    d = lambda a, b: math.dist(loc.fwd(*a), loc.fwd(*b))
+    changed = True
+    while changed and len(lines) > 1:
+        changed = False
+        for i in range(len(lines)):
+            for j in range(len(lines)):
+                if i == j:
+                    continue
+                a, b = lines[i], lines[j]
+                for bb in (b, b[::-1]):
+                    if d(a[-1], bb[0]) < snap_m:
+                        lines[i] = a + bb[1:]
+                        del lines[j]
+                        changed = True
+                        break
+                if changed:
+                    break
+            if changed:
+                break
+    # close a loop whose two ends nearly meet
+    lines = [l + [l[0]] if len(l) > 3 and l[0] != l[-1] and d(l[0], l[-1]) < snap_m else l for l in lines]
+    return lines
+
+
 # ------------------------------------------------------------- coastline ---
 
 def sea_polygons(chains, box):
@@ -382,7 +414,7 @@ out geom;"""
     if not circuit:
         print("    !! no circuit found, skipping")
         return None
-    circuit = join_lines(circuit)
+    circuit = tidy_circuit(join_lines(circuit), Local(t["lat"], t["lon"]))
 
     # extent of the circuit (metres) and surroundings box
     pts = [loc.fwd(*c) for l in circuit for c in l]
